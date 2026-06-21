@@ -1,191 +1,318 @@
-<script>
-  const CHUNK_SIZE = 16;
-  const RENDER_DISTANCE = 2;
-  let scene, camera, renderer, player;
-  let velocity = new THREE.Vector3();
-  let yaw = 0, pitch = 0;
-  let lastTime = Date.now();
-  let health = 100, hunger = 100;
-  let moveDir = { x: 0, z: 0 };
-  let chunks = new Map();
-  let selectedBlock = 1;
-  const simplex = new SimplexNoise();
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="theme-color" content="#000000">
+
+  <title>HardVoxel Survival</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="https://via.placeholder.com/180x180/000/fff?text=HV">
+
+  <style>
+    body { margin:0; overflow:hidden; background:#000; font-family:Arial; touch-action:none; }
+    canvas { display:block; }
+    #ui { position:absolute; top:10px; left:10px; color:white; z-index:10; pointer-events:none; font-size:14px; }
+    #crosshair { position:absolute; top:50%; left:50%; font-size:40px; transform:translate(-50%,-50%); color:rgba(255,255,255,0.8); z-index:10; pointer-events:none; }
+    
+    #joystickContainer { 
+      position:absolute; bottom:30px; left:30px; width:130px; height:130px; 
+      background:rgba(255,255,255,0.15); border:4px solid rgba(255,255,255,0.5); 
+      border-radius:50%; z-index:30; touch-action:none; 
+    }
+    #joystickKnob { 
+      position:absolute; top:50%; left:50%; width:50px; height:50px; 
+      background:rgba(255,255,255,0.6); border-radius:50%; 
+      transform:translate(-50%, -50%); z-index:31; 
+    }
+    #jump { 
+      position:absolute; bottom:50px; right:40px; width:80px; height:80px; 
+      background:rgba(255,255,255,0.25); border-radius:50%; display:flex; 
+      align-items:center; justify-content:center; color:white; font-size:18px; 
+      font-weight:bold; z-index:30; 
+    }
+  </style>
+</head>
+<body>
+  <div id="ui">Health: <span id="health">100</span> | Hunger: <span id="hunger">100</span></div>
+  <div id="crosshair">+</div>
   
-  // NEW: Track loading state
-  let loadingQueue = new Set();
-  let isLoading = false;
+  <div id="joystickContainer">
+    <div id="joystickKnob"></div>
+  </div>
+  <div id="jump">JUMP</div>
 
-  const BLOCK_COLORS = { 1: 0x22aa22, 2: 0x8B5A2B, 3: 0x888888 };
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r134/three.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/simplex-noise/4.0.1/simplex-noise.min.js"></script>
 
-  function init() {
-    // ... (keep your existing init code until loadChunksGradually() call)
-    scene = new THREE.Scene();
-    scene.fog = new THREE.Fog(0x88aaff, 35, 90);
+  <script>
+    const CHUNK_SIZE = 16;
+    const RENDER_DISTANCE = 2;
+    let scene, camera, renderer, player;
+    let velocity = new THREE.Vector3();
+    let yaw = 0, pitch = 0;
+    let lastTime = Date.now();
+    let health = 100, hunger = 100;
+    let moveDir = { x: 0, z: 0 };
+    let chunks = new Map();
+    let selectedBlock = 1;
+    const simplex = new SimplexNoise();
 
-    camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 150);
-    renderer = new THREE.WebGLRenderer({ antialias: false });
-    renderer.setSize(window.innerWidth, window.innerHeight);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
-    document.body.appendChild(renderer.domElement);
+    // ---- NEW: chunk loading queue ----
+    let loadingQueue = new Set();
+    let isLoading = false;
 
-    scene.add(new THREE.AmbientLight(0xffffff, 0.65));
-    const sun = new THREE.DirectionalLight(0xffffff, 0.9);
-    sun.position.set(40, 70, 30);
-    scene.add(sun);
+    const BLOCK_COLORS = { 1: 0x22aa22, 2: 0x8B5A2B, 3: 0x888888 };
 
-    player = new THREE.Object3D();
-    player.position.set(8, 18, 8);
-    camera.position.set(0, 1.6, 0);
-    player.add(camera);
-    scene.add(player);
+    function init() {
+      scene = new THREE.Scene();
+      scene.fog = new THREE.Fog(0x88aaff, 35, 90);
 
-    // Start loading chunks
-    loadChunksGradually();
-    setupControls();
-    animate();
-  }
+      camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 150);
+      renderer = new THREE.WebGLRenderer({ antialias: false });
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+      document.body.appendChild(renderer.domElement);
 
-  function getHeight(x, z) {
-    return Math.floor(simplex.noise2D(x * 0.04, z * 0.04) * 7 + 9);
-  }
+      scene.add(new THREE.AmbientLight(0xffffff, 0.65));
+      const sun = new THREE.DirectionalLight(0xffffff, 0.9);
+      sun.position.set(40, 70, 30);
+      scene.add(sun);
 
-  function createBlockMesh(x, y, z, type) {
-    const mesh = new THREE.Mesh(
-      new THREE.BoxGeometry(1, 1, 1),
-      new THREE.MeshLambertMaterial({ color: BLOCK_COLORS[type] })
-    );
-    mesh.position.set(x, y, z);
-    return mesh;
-  }
+      player = new THREE.Object3D();
+      player.position.set(8, 18, 8);
+      camera.position.set(0, 1.6, 0);
+      player.add(camera);
+      scene.add(player);
 
-  function generateChunk(cx, cz) {
-    const key = `${cx},${cz}`;
-    if (chunks.has(key)) return;
-    
-    const chunk = new THREE.Group();
-    for (let x = 0; x < CHUNK_SIZE; x++) {
-      for (let z = 0; z < CHUNK_SIZE; z++) {
-        const wx = cx * CHUNK_SIZE + x;
-        const wz = cz * CHUNK_SIZE + z;
-        const height = getHeight(wx, wz);
-        for (let y = 0; y < height; y++) {
-          let type = (y === height-1) ? 1 : (y > height-4 ? 2 : 3);
-          chunk.add(createBlockMesh(wx, y, wz, type));
+      loadChunksGradually();
+      setupControls();
+      animate();
+    }
+
+    function getHeight(x, z) {
+      return Math.floor(simplex.noise2D(x * 0.04, z * 0.04) * 7 + 9);
+    }
+
+    function createBlockMesh(x, y, z, type) {
+      const mesh = new THREE.Mesh(
+        new THREE.BoxGeometry(1, 1, 1),
+        new THREE.MeshLambertMaterial({ color: BLOCK_COLORS[type] })
+      );
+      mesh.position.set(x, y, z);
+      return mesh;
+    }
+
+    function generateChunk(cx, cz) {
+      const key = `${cx},${cz}`;
+      if (chunks.has(key)) return;
+      
+      const chunk = new THREE.Group();
+      for (let x = 0; x < CHUNK_SIZE; x++) {
+        for (let z = 0; z < CHUNK_SIZE; z++) {
+          const wx = cx * CHUNK_SIZE + x;
+          const wz = cz * CHUNK_SIZE + z;
+          const height = getHeight(wx, wz);
+          for (let y = 0; y < height; y++) {
+            let type = (y === height-1) ? 1 : (y > height-4 ? 2 : 3);
+            chunk.add(createBlockMesh(wx, y, wz, type));
+          }
         }
       }
+      scene.add(chunk);
+      chunks.set(key, chunk);
     }
-    scene.add(chunk);
-    chunks.set(key, chunk);
-  }
 
-  // FIXED: Proper chunk loading with queue management
-  function loadChunksGradually() {
-    const cx = Math.floor(player.position.x / CHUNK_SIZE);
-    const cz = Math.floor(player.position.z / CHUNK_SIZE);
-    
-    // Clear old queue entries that are no longer needed
-    const newQueue = new Set();
-    for (let dx = -RENDER_DISTANCE; dx <= RENDER_DISTANCE; dx++) {
-      for (let dz = -RENDER_DISTANCE; dz <= RENDER_DISTANCE; dz++) {
-        const key = `${cx + dx},${cz + dz}`;
-        if (!chunks.has(key)) {
-          newQueue.add(key);
+    // ---- NEW: gradual loading with queue ----
+    function loadChunksGradually() {
+      const cx = Math.floor(player.position.x / CHUNK_SIZE);
+      const cz = Math.floor(player.position.z / CHUNK_SIZE);
+      
+      const newQueue = new Set();
+      for (let dx = -RENDER_DISTANCE; dx <= RENDER_DISTANCE; dx++) {
+        for (let dz = -RENDER_DISTANCE; dz <= RENDER_DISTANCE; dz++) {
+          const key = `${cx + dx},${cz + dz}`;
+          if (!chunks.has(key)) {
+            newQueue.add(key);
+          }
         }
       }
+      loadingQueue = newQueue;
+      
+      if (!isLoading) processQueue();
     }
-    loadingQueue = newQueue;
-    
-    // Start processing if not already
-    if (!isLoading) processQueue();
-  }
 
-  function processQueue() {
-    if (loadingQueue.size === 0) {
-      isLoading = false;
-      return;
+    function processQueue() {
+      if (loadingQueue.size === 0) {
+        isLoading = false;
+        return;
+      }
+      isLoading = true;
+      
+      const iterator = loadingQueue.values();
+      const next = iterator.next();
+      if (!next.done) {
+        const key = next.value;
+        loadingQueue.delete(key);
+        const [cx, cz] = key.split(',').map(Number);
+        generateChunk(cx, cz);
+      }
+      
+      setTimeout(processQueue, 10);
     }
-    isLoading = true;
-    
-    // Take one chunk from queue
-    const iterator = loadingQueue.values();
-    const next = iterator.next();
-    if (!next.done) {
-      const key = next.value;
-      loadingQueue.delete(key);
-      const [cx, cz] = key.split(',').map(Number);
-      generateChunk(cx, cz);
-    }
-    
-    // Schedule next chunk with a small delay
-    setTimeout(processQueue, 10);
-  }
 
-  function updateChunks() {
-    const cx = Math.floor(player.position.x / CHUNK_SIZE);
-    const cz = Math.floor(player.position.z / CHUNK_SIZE);
-    
-    // Unload far chunks FIRST
-    for (let [key, chunk] of chunks.entries()) {
-      const [kx, kz] = key.split(',').map(Number);
-      if (Math.abs(kx - cx) > RENDER_DISTANCE + 1 || Math.abs(kz - cz) > RENDER_DISTANCE + 1) {
-        scene.remove(chunk);
-        // Clean up geometries/materials to prevent memory leaks
-        chunk.children.forEach(child => {
-          if (child.geometry) child.geometry.dispose();
-          if (child.material) child.material.dispose();
+    function updateChunks() {
+      const cx = Math.floor(player.position.x / CHUNK_SIZE);
+      const cz = Math.floor(player.position.z / CHUNK_SIZE);
+      
+      // Unload far chunks
+      for (let [key, chunk] of chunks.entries()) {
+        const [kx, kz] = key.split(',').map(Number);
+        if (Math.abs(kx - cx) > RENDER_DISTANCE + 1 || Math.abs(kz - cz) > RENDER_DISTANCE + 1) {
+          scene.remove(chunk);
+          chunk.children.forEach(child => {
+            if (child.geometry) child.geometry.dispose();
+            if (child.material) child.material.dispose();
+          });
+          chunks.delete(key);
+        }
+      }
+      
+      loadChunksGradually();
+    }
+
+    // ---- RAYCAST (unchanged) ----
+    function raycastBlock(remove) {
+      const raycaster = new THREE.Raycaster();
+      raycaster.setFromCamera(new THREE.Vector2(0,0), camera);
+      const intersects = raycaster.intersectObjects(scene.children, true);
+      if (intersects.length === 0) return;
+
+      const i = intersects[0];
+      let pos = i.point.clone();
+      if (!remove) pos.add(i.face.normal.multiplyScalar(0.6));
+
+      const bx = Math.floor(pos.x), by = Math.floor(pos.y), bz = Math.floor(pos.z);
+
+      if (remove) {
+        scene.children.forEach(c => {
+          if (c.position && Math.abs(c.position.x - bx) < 0.6 && 
+              Math.abs(c.position.y - by) < 0.6 && Math.abs(c.position.z - bz) < 0.6) {
+            scene.remove(c);
+          }
         });
-        chunks.delete(key);
+      } else {
+        scene.add(createBlockMesh(bx, by, bz, selectedBlock));
       }
     }
-    
-    // Then load new chunks
-    loadChunksGradually();
-  }
 
-  // ... (keep your raycastBlock, setupControls, animate, etc. exactly as they were)
-  // Just make sure to replace the updateChunks call in animate() with this fixed version
+    // ---- CONTROLS (unchanged) ----
+    function setupControls() {
+      const container = document.getElementById('joystickContainer');
+      const knob = document.getElementById('joystickKnob');
+      let joystickActive = false, centerX, centerY;
 
-  function raycastBlock(remove) {
-    // ... (your existing code)
-  }
+      container.addEventListener('touchstart', e => {
+        joystickActive = true;
+        const r = container.getBoundingClientRect();
+        centerX = r.left + r.width/2;
+        centerY = r.top + r.height/2;
+        updateKnob(e.touches[0]);
+      });
 
-  function setupControls() {
-    // ... (your existing code)
-  }
+      document.addEventListener('touchmove', e => {
+        if (joystickActive) updateKnob(e.touches[0]);
+      });
 
-  function animate() {
-    requestAnimationFrame(animate);
-    const dt = (Date.now() - lastTime) / 1000 || 0.016;
-    lastTime = Date.now();
+      document.addEventListener('touchend', () => {
+        if (joystickActive) {
+          joystickActive = false;
+          knob.style.transform = 'translate(-50%, -50%)';
+          moveDir = {x:0, z:0};
+        }
+      });
 
-    const speed = 8.5 * dt;
-    const forward = new THREE.Vector3(0,0,moveDir.z).applyQuaternion(camera.quaternion);
-    const strafe = new THREE.Vector3(moveDir.x,0,0).applyQuaternion(camera.quaternion);
-    player.position.x += (forward.x + strafe.x) * speed;
-    player.position.z += (forward.z + strafe.z) * speed;
+      function updateKnob(t) {
+        let dx = t.clientX - centerX;
+        let dy = t.clientY - centerY;
+        const d = Math.min(45, Math.hypot(dx, dy));
+        const a = Math.atan2(dy, dx);
+        dx = Math.cos(a) * d;
+        dy = Math.sin(a) * d;
+        knob.style.transform = `translate(${dx-25}px, ${dy-25}px)`;
+        moveDir.x = dx/45;
+        moveDir.z = dy/45;
+      }
 
-    velocity.y -= 28 * dt;
-    player.position.y += velocity.y * dt;
-    if (player.position.y < 6) {
-      player.position.y = 6;
-      velocity.y = 0;
+      const canvas = renderer.domElement;
+      let lx = 0, ly = 0;
+      canvas.addEventListener('touchstart', e => {
+        if (e.touches[0].clientX > window.innerWidth * 0.45) {
+          lx = e.touches[0].clientX;
+          ly = e.touches[0].clientY;
+        }
+      });
+      canvas.addEventListener('touchmove', e => {
+        if (e.touches[0].clientX > window.innerWidth * 0.45) {
+          const dx = e.touches[0].clientX - lx;
+          const dy = e.touches[0].clientY - ly;
+          yaw -= dx * 0.007;
+          pitch -= dy * 0.007;
+          pitch = Math.max(-1.4, Math.min(1.4, pitch));
+          camera.rotation.set(pitch, yaw, 0);
+          lx = e.touches[0].clientX;
+          ly = e.touches[0].clientY;
+        }
+      });
+
+      canvas.addEventListener('touchend', e => {
+        const tx = e.changedTouches[0].clientX;
+        raycastBlock(tx > window.innerWidth * 0.45);
+      });
+
+      document.getElementById('jump').addEventListener('touchstart', () => {
+        if (player.position.y < 9) velocity.y = 11;
+      });
     }
 
-    hunger = Math.max(0, hunger - 0.7 * dt);
-    document.getElementById('health').textContent = Math.floor(health);
-    document.getElementById('hunger').textContent = Math.floor(hunger);
+    // ---- ANIMATION LOOP (unchanged except updateChunks) ----
+    function animate() {
+      requestAnimationFrame(animate);
+      const dt = (Date.now() - lastTime) / 1000 || 0.016;
+      lastTime = Date.now();
 
-    updateChunks();
-    renderer.render(scene, camera);
-  }
+      const speed = 8.5 * dt;
+      const forward = new THREE.Vector3(0,0,moveDir.z).applyQuaternion(camera.quaternion);
+      const strafe = new THREE.Vector3(moveDir.x,0,0).applyQuaternion(camera.quaternion);
+      player.position.x += (forward.x + strafe.x) * speed;
+      player.position.z += (forward.z + strafe.z) * speed;
 
-  window.addEventListener('resize', () => {
-    camera.aspect = window.innerWidth / window.innerHeight;
-    camera.updateProjectionMatrix();
-    renderer.setSize(window.innerWidth, window.innerHeight);
-  });
+      velocity.y -= 28 * dt;
+      player.position.y += velocity.y * dt;
+      if (player.position.y < 6) {
+        player.position.y = 6;
+        velocity.y = 0;
+      }
 
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js');
+      hunger = Math.max(0, hunger - 0.7 * dt);
+      document.getElementById('health').textContent = Math.floor(health);
+      document.getElementById('hunger').textContent = Math.floor(hunger);
 
-  init();
-</script>
+      updateChunks();  // now uses the queue
+      renderer.render(scene, camera);
+    }
+
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js');
+
+    init();
+  </script>
+</body>
+</html>
