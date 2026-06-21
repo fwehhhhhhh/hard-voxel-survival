@@ -3,14 +3,22 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-  <title>HardVoxel Mobile</title>
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="theme-color" content="#000000">
+
+  <title>HardVoxel Survival</title>
+
+  <!-- PWA Manifest -->
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="https://via.placeholder.com/180x180/000/fff?text=HV">
+
   <style>
     body { margin:0; overflow:hidden; background:#000; font-family:Arial; touch-action:none; }
     canvas { display:block; }
     #ui { position:absolute; top:10px; left:10px; color:white; z-index:10; pointer-events:none; font-size:14px; }
     #crosshair { position:absolute; top:50%; left:50%; font-size:40px; transform:translate(-50%,-50%); color:rgba(255,255,255,0.8); z-index:10; pointer-events:none; }
     
-    /* Joystick */
     #joystickContainer { 
       position:absolute; bottom:30px; left:30px; width:130px; height:130px; 
       background:rgba(255,255,255,0.15); border:4px solid rgba(255,255,255,0.5); 
@@ -21,7 +29,6 @@
       background:rgba(255,255,255,0.6); border-radius:50%; 
       transform:translate(-50%, -50%); z-index:31; 
     }
-    
     #jump { 
       position:absolute; bottom:50px; right:40px; width:80px; height:80px; 
       background:rgba(255,255,255,0.25); border-radius:50%; display:flex; 
@@ -43,6 +50,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/simplex-noise/4.0.1/simplex-noise.min.js"></script>
 
   <script>
+    // ... (same game code as last version - joystick + touch look + world)
     const CHUNK_SIZE = 12;
     const RENDER_DISTANCE = 2;
     let scene, camera, renderer, player;
@@ -73,18 +81,13 @@
       player.add(camera);
       scene.add(player);
 
-      // Test world
       generateSmallWorld();
-
       setupControls();
       animate();
     }
 
     function createBlock(x, y, z, color) {
-      const mesh = new THREE.Mesh(
-        new THREE.BoxGeometry(1,1,1),
-        new THREE.MeshLambertMaterial({color})
-      );
+      const mesh = new THREE.Mesh(new THREE.BoxGeometry(1,1,1), new THREE.MeshLambertMaterial({color}));
       mesh.position.set(x, y, z);
       scene.add(mesh);
     }
@@ -102,20 +105,20 @@
     }
 
     function setupControls() {
-      // Desktop keyboard
       const keys = {};
       document.addEventListener('keydown', e => keys[e.key.toLowerCase()] = true);
       document.addEventListener('keyup', e => keys[e.key.toLowerCase()] = false);
 
-      // Touch look (right side of screen)
       const canvas = renderer.domElement;
       let lastX = 0, lastY = 0;
+
       canvas.addEventListener('touchstart', e => {
         if (e.touches.length === 1 && e.touches[0].clientX > window.innerWidth * 0.4) {
           lastX = e.touches[0].clientX;
           lastY = e.touches[0].clientY;
         }
       });
+
       canvas.addEventListener('touchmove', e => {
         if (e.touches.length === 1 && e.touches[0].clientX > window.innerWidth * 0.4) {
           const dx = e.touches[0].clientX - lastX;
@@ -129,7 +132,7 @@
         }
       });
 
-      // Virtual Joystick
+      // Joystick
       const container = document.getElementById('joystickContainer');
       const knob = document.getElementById('joystickKnob');
       let joystickActive = false;
@@ -159,20 +162,16 @@
       function updateKnob(touch) {
         let dx = touch.clientX - centerX;
         let dy = touch.clientY - centerY;
-        const dist = Math.min(45, Math.sqrt(dx*dx + dy*dy));
+        const dist = Math.min(45, Math.hypot(dx, dy));
         const angle = Math.atan2(dy, dx);
-        
         dx = Math.cos(angle) * dist;
         dy = Math.sin(angle) * dist;
 
         knob.style.transform = `translate(${dx-25}px, ${dy-25}px)`;
-
-        // Normalize movement
         moveDir.x = dx / 45;
         moveDir.z = dy / 45;
       }
 
-      // Jump
       document.getElementById('jump').addEventListener('touchstart', () => {
         if (player.position.y < 8) velocity.y = 11;
       });
@@ -180,4 +179,42 @@
 
     function animate() {
       requestAnimationFrame(animate);
-      const dt = (Date.now() - lastTime) /
+      const dt = (Date.now() - lastTime) / 1000 || 0.016;
+      lastTime = Date.now();
+
+      const speed = 9 * dt;
+      const forward = new THREE.Vector3(0, 0, moveDir.z).applyQuaternion(camera.quaternion);
+      const strafe = new THREE.Vector3(moveDir.x, 0, 0).applyQuaternion(camera.quaternion);
+      
+      player.position.x += (forward.x + strafe.x) * speed;
+      player.position.z += (forward.z + strafe.z) * speed;
+
+      velocity.y -= 28 * dt;
+      player.position.y += velocity.y * dt;
+      if (player.position.y < 6) {
+        player.position.y = 6;
+        velocity.y = 0;
+      }
+
+      hunger = Math.max(0, hunger - 3 * dt);
+      document.getElementById('health').textContent = Math.floor(health);
+      document.getElementById('hunger').textContent = Math.floor(hunger);
+
+      renderer.render(scene, camera);
+    }
+
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    // Register Service Worker
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('sw.js');
+    }
+
+    init();
+  </script>
+</body>
+</html>
