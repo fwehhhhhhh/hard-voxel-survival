@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+l<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -49,7 +49,7 @@
 
   <script>
     const CHUNK_SIZE = 16;
-    const RENDER_DISTANCE = 3; // increase if your phone can handle it
+    const RENDER_DISTANCE = 2; // safe for phones
     let scene, camera, renderer, player;
     let velocity = new THREE.Vector3();
     let yaw = 0, pitch = 0;
@@ -57,72 +57,64 @@
     let health = 100, hunger = 100;
     let moveDir = { x: 0, z: 0 };
     let chunks = new Map();
-    let selectedBlock = 1; // 1=grass, 2=dirt, 3=stone
+    let selectedBlock = 1;
     const simplex = new SimplexNoise();
 
-    const BLOCK_COLORS = {
-      1: 0x22aa22, // grass
-      2: 0x8B5A2B, // dirt
-      3: 0x888888  // stone
-    };
+    const BLOCK_COLORS = { 1: 0x22aa22, 2: 0x8B5A2B, 3: 0x888888 };
 
     function init() {
       scene = new THREE.Scene();
-      scene.fog = new THREE.Fog(0x88aaff, 40, 120);
+      scene.fog = new THREE.Fog(0x88aaff, 35, 90);
 
-      camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 200);
+      camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 150);
       renderer = new THREE.WebGLRenderer({ antialias: false });
       renderer.setSize(window.innerWidth, window.innerHeight);
-      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
       document.body.appendChild(renderer.domElement);
 
-      scene.add(new THREE.AmbientLight(0xffffff, 0.7));
+      scene.add(new THREE.AmbientLight(0xffffff, 0.65));
       const sun = new THREE.DirectionalLight(0xffffff, 0.9);
-      sun.position.set(50, 80, 30);
+      sun.position.set(40, 70, 30);
       scene.add(sun);
 
       player = new THREE.Object3D();
-      player.position.set(8, 20, 8);
+      player.position.set(8, 18, 8);
       camera.position.set(0, 1.6, 0);
       player.add(camera);
       scene.add(player);
 
-      generateInitialWorld();
+      // Start loading chunks gradually
+      loadChunksGradually();
       setupControls();
       animate();
     }
 
     function getHeight(x, z) {
-      return Math.floor(simplex.noise2D(x * 0.03, z * 0.03) * 6 + 8);
+      return Math.floor(simplex.noise2D(x * 0.04, z * 0.04) * 7 + 9);
     }
 
     function createBlockMesh(x, y, z, type) {
       const mesh = new THREE.Mesh(
         new THREE.BoxGeometry(1, 1, 1),
-        new THREE.MeshLambertMaterial({ color: BLOCK_COLORS[type] || 0xaaaaaa })
+        new THREE.MeshLambertMaterial({ color: BLOCK_COLORS[type] })
       );
       mesh.position.set(x, y, z);
-      mesh.userData.type = type;
       return mesh;
     }
 
     function generateChunk(cx, cz) {
       const key = `${cx},${cz}`;
       if (chunks.has(key)) return;
+      
       const chunk = new THREE.Group();
-
       for (let x = 0; x < CHUNK_SIZE; x++) {
         for (let z = 0; z < CHUNK_SIZE; z++) {
           const wx = cx * CHUNK_SIZE + x;
           const wz = cz * CHUNK_SIZE + z;
           const height = getHeight(wx, wz);
-
           for (let y = 0; y < height; y++) {
-            let type = 3; // stone
-            if (y === height - 1) type = 1; // grass
-            else if (y > height - 4) type = 2; // dirt
-            const block = createBlockMesh(wx, y, wz, type);
-            chunk.add(block);
+            let type = (y === height-1) ? 1 : (y > height-4 ? 2 : 3);
+            chunk.add(createBlockMesh(wx, y, wz, type));
           }
         }
       }
@@ -130,12 +122,16 @@
       chunks.set(key, chunk);
     }
 
-    function generateInitialWorld() {
-      const startX = Math.floor(player.position.x / CHUNK_SIZE);
-      const startZ = Math.floor(player.position.z / CHUNK_SIZE);
+    // Threaded / gradual chunk loading
+    function loadChunksGradually() {
+      const cx = Math.floor(player.position.x / CHUNK_SIZE);
+      const cz = Math.floor(player.position.z / CHUNK_SIZE);
+      
       for (let dx = -RENDER_DISTANCE; dx <= RENDER_DISTANCE; dx++) {
         for (let dz = -RENDER_DISTANCE; dz <= RENDER_DISTANCE; dz++) {
-          generateChunk(startX + dx, startZ + dz);
+          setTimeout(() => {
+            generateChunk(cx + dx, cz + dz);
+          }, (Math.abs(dx) + Math.abs(dz)) * 30); // stagger loading
         }
       }
     }
@@ -143,15 +139,14 @@
     function updateChunks() {
       const cx = Math.floor(player.position.x / CHUNK_SIZE);
       const cz = Math.floor(player.position.z / CHUNK_SIZE);
-      for (let dx = -RENDER_DISTANCE; dx <= RENDER_DISTANCE; dx++) {
-        for (let dz = -RENDER_DISTANCE; dz <= RENDER_DISTANCE; dz++) {
-          generateChunk(cx + dx, cz + dz);
-        }
-      }
-      // Simple cleanup of far chunks
-      for (let [key, chunk] of chunks) {
+      
+      // Load nearby
+      loadChunksGradually();
+      
+      // Unload far chunks
+      for (let [key, chunk] of chunks.entries()) {
         const [kx, kz] = key.split(',').map(Number);
-        if (Math.abs(kx - cx) > RENDER_DISTANCE + 1 || Math.abs(kz - cz) > RENDER_DISTANCE + 1) {
+        if (Math.abs(kx - cx) > RENDER_DISTANCE + 2 || Math.abs(kz - cz) > RENDER_DISTANCE + 2) {
           scene.remove(chunk);
           chunks.delete(key);
         }
@@ -160,46 +155,39 @@
 
     function raycastBlock(remove) {
       const raycaster = new THREE.Raycaster();
-      raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
+      raycaster.setFromCamera(new THREE.Vector2(0,0), camera);
       const intersects = raycaster.intersectObjects(scene.children, true);
-      if (intersects.length > 0) {
-        const intersect = intersects[0];
-        let pos = intersect.point.clone();
-        if (!remove) pos.add(intersect.face.normal.multiplyScalar(0.6));
+      if (intersects.length === 0) return;
 
-        const bx = Math.floor(pos.x);
-        const by = Math.floor(pos.y);
-        const bz = Math.floor(pos.z);
+      const i = intersects[0];
+      let pos = i.point.clone();
+      if (!remove) pos.add(i.face.normal.multiplyScalar(0.6));
 
-        if (remove) {
-          // Remove block
-          scene.children.forEach(child => {
-            if (child.position && Math.abs(child.position.x - bx) < 0.1 &&
-                Math.abs(child.position.y - by) < 0.1 &&
-                Math.abs(child.position.z - bz) < 0.1) {
-              scene.remove(child);
-            }
-          });
-        } else {
-          // Place block
-          const block = createBlockMesh(bx, by, bz, selectedBlock);
-          scene.add(block);
-        }
+      const bx = Math.floor(pos.x), by = Math.floor(pos.y), bz = Math.floor(pos.z);
+
+      if (remove) {
+        scene.children.forEach(c => {
+          if (c.position && Math.abs(c.position.x - bx) < 0.6 && 
+              Math.abs(c.position.y - by) < 0.6 && Math.abs(c.position.z - bz) < 0.6) {
+            scene.remove(c);
+          }
+        });
+      } else {
+        scene.add(createBlockMesh(bx, by, bz, selectedBlock));
       }
     }
 
     function setupControls() {
-      // Joystick (same as before)
+      // Joystick + touch look (same reliable code)
       const container = document.getElementById('joystickContainer');
       const knob = document.getElementById('joystickKnob');
-      let joystickActive = false;
-      let centerX, centerY;
+      let joystickActive = false, centerX, centerY;
 
       container.addEventListener('touchstart', e => {
         joystickActive = true;
-        const rect = container.getBoundingClientRect();
-        centerX = rect.left + rect.width / 2;
-        centerY = rect.top + rect.height / 2;
+        const r = container.getBoundingClientRect();
+        centerX = r.left + r.width/2;
+        centerY = r.top + r.height/2;
         updateKnob(e.touches[0]);
       });
 
@@ -211,56 +199,52 @@
         if (joystickActive) {
           joystickActive = false;
           knob.style.transform = 'translate(-50%, -50%)';
-          moveDir = { x: 0, z: 0 };
+          moveDir = {x:0, z:0};
         }
       });
 
-      function updateKnob(touch) {
-        let dx = touch.clientX - centerX;
-        let dy = touch.clientY - centerY;
-        const dist = Math.min(45, Math.hypot(dx, dy));
-        const angle = Math.atan2(dy, dx);
-        dx = Math.cos(angle) * dist;
-        dy = Math.sin(angle) * dist;
+      function updateKnob(t) {
+        let dx = t.clientX - centerX;
+        let dy = t.clientY - centerY;
+        const d = Math.min(45, Math.hypot(dx, dy));
+        const a = Math.atan2(dy, dx);
+        dx = Math.cos(a) * d;
+        dy = Math.sin(a) * d;
         knob.style.transform = `translate(${dx-25}px, ${dy-25}px)`;
-        moveDir.x = dx / 45;
-        moveDir.z = dy / 45;
+        moveDir.x = dx/45;
+        moveDir.z = dy/45;
       }
 
-      // Touch look (right side)
+      // Right side look
       const canvas = renderer.domElement;
-      let lastX = 0, lastY = 0;
+      let lx = 0, ly = 0;
       canvas.addEventListener('touchstart', e => {
-        if (e.touches.length === 1 && e.touches[0].clientX > window.innerWidth * 0.45) {
-          lastX = e.touches[0].clientX;
-          lastY = e.touches[0].clientY;
+        if (e.touches[0].clientX > window.innerWidth * 0.45) {
+          lx = e.touches[0].clientX;
+          ly = e.touches[0].clientY;
         }
       });
       canvas.addEventListener('touchmove', e => {
-        if (e.touches.length === 1 && e.touches[0].clientX > window.innerWidth * 0.45) {
-          const dx = e.touches[0].clientX - lastX;
-          const dy = e.touches[0].clientY - lastY;
-          yaw -= dx * 0.008;
-          pitch -= dy * 0.008;
+        if (e.touches[0].clientX > window.innerWidth * 0.45) {
+          const dx = e.touches[0].clientX - lx;
+          const dy = e.touches[0].clientY - ly;
+          yaw -= dx * 0.007;
+          pitch -= dy * 0.007;
           pitch = Math.max(-1.4, Math.min(1.4, pitch));
           camera.rotation.set(pitch, yaw, 0);
-          lastX = e.touches[0].clientX;
-          lastY = e.touches[0].clientY;
+          lx = e.touches[0].clientX;
+          ly = e.touches[0].clientY;
         }
       });
 
-      // Break / Place
+      // Tap to break/place
       canvas.addEventListener('touchend', e => {
-        if (e.changedTouches[0].clientX > window.innerWidth * 0.45) {
-          raycastBlock(true); // tap right side = break
-        } else {
-          raycastBlock(false); // tap left side = place
-        }
+        const tx = e.changedTouches[0].clientX;
+        raycastBlock(tx > window.innerWidth * 0.45);
       });
 
-      // Jump
       document.getElementById('jump').addEventListener('touchstart', () => {
-        if (player.position.y < 8) velocity.y = 11;
+        if (player.position.y < 9) velocity.y = 11;
       });
     }
 
@@ -269,14 +253,12 @@
       const dt = (Date.now() - lastTime) / 1000 || 0.016;
       lastTime = Date.now();
 
-      // Movement
-      const speed = 9 * dt;
-      const forward = new THREE.Vector3(0, 0, moveDir.z).applyQuaternion(camera.quaternion);
-      const strafe = new THREE.Vector3(moveDir.x, 0, 0).applyQuaternion(camera.quaternion);
+      const speed = 8.5 * dt;
+      const forward = new THREE.Vector3(0,0,moveDir.z).applyQuaternion(camera.quaternion);
+      const strafe = new THREE.Vector3(moveDir.x,0,0).applyQuaternion(camera.quaternion);
       player.position.x += (forward.x + strafe.x) * speed;
       player.position.z += (forward.z + strafe.z) * speed;
 
-      // Gravity
       velocity.y -= 28 * dt;
       player.position.y += velocity.y * dt;
       if (player.position.y < 6) {
@@ -284,8 +266,7 @@
         velocity.y = 0;
       }
 
-      // Very slow hunger
-      hunger = Math.max(0, hunger - 0.8 * dt);
+      hunger = Math.max(0, hunger - 0.7 * dt);
       document.getElementById('health').textContent = Math.floor(health);
       document.getElementById('hunger').textContent = Math.floor(hunger);
 
